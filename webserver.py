@@ -1,6 +1,7 @@
 import os
 from bottle import route, run, template, app, response
 
+
 @route('/', defaults={'path': ''})
 @route('/<path:path>')
 def all(path="/"):

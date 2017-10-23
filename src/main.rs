@@ -13,6 +13,8 @@
 // limitations under the License.
 
 extern crate env_logger;
+extern crate futures;
+extern crate hyper;
 #[macro_use]
 extern crate log;
 extern crate notify;
@@ -27,12 +29,80 @@ use notify::{raw_watcher, RawEvent, RecursiveMode, Watcher};
 use std::fs::File;
 use std::io::BufReader;
 use std::io::prelude::*;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::channel;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Instant;
-use std::ffi::OsStr;
+use std::ffi::{OsStr, OsString};
+use hyper::server::{Http, Request, Response, Service};
+use hyper::header::ContentType;
+use hyper::StatusCode;
+use hyper::mime;
+use futures::future;
+use futures::future::Future;
+
+struct WebServer;
+
+impl Service for WebServer {
+    type Request = Request;
+    type Response = Response;
+    type Error = hyper::Error;
+    type Future = Box<Future<Item = Self::Response, Error = Self::Error>>;
+
+    fn call(&self, req: Request) -> Self::Future {
+        let data_path_str = format!("data/{}", req.path());
+        let data_path = Path::new(data_path_str.as_str());
+        if !data_path.exists() {
+            return Box::new(future::ok(
+                Response::new()
+                    .with_status(StatusCode::NotFound)
+                    .with_body("not there"),
+            ));
+        }
+
+        if data_path.is_file() {
+            let mut data = String::new();
+            let result = File::open(data_path).and_then(|mut f| f.read_to_string(&mut data));
+            match result {
+                Ok(_) => {
+                    return Box::new(future::ok(
+                        Response::new()
+                            .with_header(ContentType(mime::APPLICATION_JSON))
+                            .with_body(data),
+                    ));
+                }
+                Err(_) => {
+                    return Box::new(future::ok(Response::new().with_body("nope")));
+                }
+            }
+        } else {
+            let mut listdir: Vec<std::fs::DirEntry> = data_path.read_dir().unwrap().map(|r| r.unwrap()).collect();
+            listdir.sort_by_key(|dir| dir.path());
+            let mut rv: String = get_contents(data_path.join(".sha1").as_ref()) + "\n";
+            for entry in listdir {
+                if entry.path().to_str().unwrap().ends_with(".sha1") {
+                    continue;
+                } else {
+                    rv += (entry.file_name().to_str().unwrap().to_string() + " ").as_ref();
+                    let path: String = entry.path().to_str().unwrap().to_owned() + ".sha1";
+                    let path_item = Path::new(&path);
+                    if path_item.is_file() {
+                        rv += (get_contents(path_item.as_ref()) + "\n").as_str();
+                    } else {
+                        rv += (get_contents(entry.path().join(".sha1").as_ref()) + "\n").as_str();
+                    }
+                }
+            }
+            return Box::new(future::ok(
+                Response::new()
+                    .with_body(rv)
+                    .with_header(ContentType(mime::TEXT_PLAIN)),
+            ));
+        }
+    }
+}
+
 
 pub fn comma_separated_list(dir_sha1s: &Vec<String>) -> String {
     let mut dir_sha1s = dir_sha1s.clone();
@@ -109,6 +179,11 @@ fn run(path: &str) {
     let (tx, rx) = channel();
     let mut watcher = raw_watcher(tx).unwrap();
     watcher.watch(&path, RecursiveMode::Recursive).unwrap();
+    thread::spawn(move || {
+        let addr = "127.0.0.1:8080".parse().unwrap();
+        let server = Http::new().bind(&addr, || Ok(WebServer)).unwrap();
+        server.run().unwrap();
+    });
 
     loop {
         match rx.recv() {

@@ -19,6 +19,8 @@ use std::io::prelude::*;
 use std::path::Path;
 use std::thread;
 use std::time::{Duration, Instant};
+use hyper::client::Client;
+use tokio_core::reactor::Core;
 
 fn file_matches(path: &Path, expected: &str) -> bool {
     let file = File::open(path).unwrap();
@@ -99,4 +101,6 @@ fn integration_test() {
     // Wait for root sha1 to change
     wait_for_file_matches(&root_sha1_path, "e600c58d06aee522595acb019e71487db53eb487");
     info!("Second test passed - root sha1 matches");
+
+
 }
